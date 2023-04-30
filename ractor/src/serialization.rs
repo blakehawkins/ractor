@@ -180,9 +180,34 @@ impl BytesConvertable for Vec<char> {
     }
 }
 
+trait NullTerminatedBytesConvertible {
+    fn into_bytes_null_terminated(self) -> Vec<u8>;
+    fn from_bytes_null_terminated(bytes: Vec<u8>) -> Self;
+}
+
+impl<T> BytesConvertable for Vec<T>
+where
+    T: NullTerminatedBytesConvertible + BytesConvertable,
+{
+    fn into_bytes(self) -> Vec<u8> {
+        self.into_iter()
+            .flat_map(|val| val.into_bytes_null_terminated().into_iter())
+            .collect()
+    }
+
+    fn from_bytes(bytes: Vec<u8>) -> Self {
+        bytes
+            .split(|v| v == &0u8)
+            .filter(|v| !v.is_empty())
+            .map(|chunk| BytesConvertable::from_bytes(chunk.into()))
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::BytesConvertable;
+    use crate::serialization::NullTerminatedBytesConvertible;
     use crate::{message::BoxedDowncastErr, Message};
     use rand::{distributions::Alphanumeric, thread_rng, Rng};
 
@@ -278,5 +303,56 @@ mod tests {
         let err = BoxedDowncastErr;
         println!("{err}");
         println!("{err:?}");
+    }
+
+    #[derive(Clone, Default, Eq, PartialEq, Debug)]
+    struct Test {}
+
+    // TODO: NullTerminatedBytesConvertible should use a custom derive macro
+    impl NullTerminatedBytesConvertible for Test {
+        fn into_bytes_null_terminated(self) -> Vec<u8> {
+            let mut res = self.into_bytes();
+            res.extend([0u8]);
+
+            res
+        }
+
+        fn from_bytes_null_terminated(mut bytes: Vec<u8>) -> Self {
+            bytes.retain(|v| v != &0u8);
+            BytesConvertable::from_bytes(bytes)
+        }
+    }
+
+    impl BytesConvertable for Test {
+        fn into_bytes(self) -> Vec<u8> {
+            let mut rng = thread_rng();
+            let len = rng.gen_range(1..10);
+            "test case"
+                .as_bytes()
+                .into_iter()
+                .take(len)
+                .cloned()
+                .collect()
+        }
+
+        fn from_bytes(_bytes: Vec<u8>) -> Self {
+            Test {}
+        }
+    }
+
+    #[test]
+    fn test_blanket_impl_example() {
+        let test = vec![Test {}, Test {}];
+
+        let serialised = test.into_bytes();
+
+        // Validate that there are two null bytes in the serialised form:
+        let mut serialised_null_bytes = serialised.clone();
+        serialised_null_bytes.retain(|v| v == &0u8);
+        assert_eq!(serialised_null_bytes, vec![0u8, 0u8]);
+
+        let deserialized = Vec::<Test>::from_bytes(serialised);
+
+        assert_eq!(deserialized, vec![Test {}, Test {}]);
     }
 }
